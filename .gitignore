@@ -1,0 +1,37 @@
+# Runtime data
+data/
+backups/
+exports/
+share_codes/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Python cache and local tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local test scratch
+.test-tmp/
+backend-test-tmp/
+data_realtest/
+backend_file_test/
+
+# Build output
+dist/
+build/
+*.spec
+CodexVault.exe
+codexvault_launcher.sed
+
+# Local secrets
+.env
+auth.json
+cap_sid
+installation_id
