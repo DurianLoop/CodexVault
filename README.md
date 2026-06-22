@@ -2,7 +2,7 @@
 
 > v0.1 internal beta: a Windows desktop vault for inspecting, backing up, exporting, importing, and sharing your local Codex workspace assets.
 
-![Codex Vault hero](docs/assets/codex-vault-hero.svg)
+![Codex Vault dashboard](docs/assets/dashboard.png)
 
 Codex Vault is a lightweight desktop companion for people who keep valuable Codex configuration, skills, memory notes, project prompts, and migration packs under a local `.codex` directory.
 
@@ -33,7 +33,7 @@ Those assets are easy to lose, hard to audit, and awkward to transfer manually. 
 - **Achievement notifications** with Windows toast attempt and Tkinter fallback.
 - **Low-permission design**: no admin rights, no npm, no Rust, no Electron, no cloud account required for the beta.
 
-![Codex Vault architecture](docs/assets/codex-vault-architecture.svg)
+![Codex Vault achievement wall](docs/assets/achievement.png)
 
 ## What v0.1 Is Not Yet
 
@@ -79,6 +79,16 @@ Or double-click:
 ```text
 run_backend.bat
 ```
+
+## Promotional Page
+
+A static Anytype-inspired product page lives at:
+
+```text
+site/index.html
+```
+
+Open it directly in a browser, or use it later as the starting point for GitHub Pages.
 
 ## Default Data Location
 
@@ -153,6 +163,7 @@ codexvault/                 App, scanner, workflow, backend, achievements
 tests/                      Unit and workflow tests
 tools/                      Build helpers
 docs/                       Checklists, planning docs, roadmap docs
+site/                       Static promotional page
 run_codex_vault.bat         Desktop launcher
 run_backend.bat             Local backend launcher
 build_portable_exe.bat      Lightweight launcher build helper
@@ -172,4 +183,3 @@ This repository is published as a v0.1 internal beta for feedback on:
 The next target is v0.2, focused on a real sync model, stronger packaging, and a more polished achievement system.
 
 See [docs/V0.2_UPGRADE_PLAN.md](docs/V0.2_UPGRADE_PLAN.md).
-

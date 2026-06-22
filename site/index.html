@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Vault - Local-first memory and skill migration for Codex</title>
+  <meta name="description" content="Codex Vault is a local-first desktop vault for backing up, previewing, migrating, and sharing your Codex skills, memories, prompts, and achievements.">
+  <style>
+    :root {
+      --paper: #f6f4ef;
+      --paper-2: #ece8de;
+      --ink: #171717;
+      --muted: #6f6a60;
+      --line: #d7d1c3;
+      --green: #0f7c68;
+      --green-dark: #0b5146;
+      --blue: #315f92;
+      --gold: #b47921;
+      --panel: #fffdf8;
+      --shadow: 0 26px 80px rgba(35, 30, 20, .12);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        linear-gradient(rgba(23, 23, 23, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(23, 23, 23, .035) 1px, transparent 1px),
+        var(--paper);
+      background-size: 24px 24px;
+      color: var(--ink);
+      font-family: ui-serif, Georgia, "Times New Roman", serif;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    .wrap { width: min(1160px, calc(100% - 40px)); margin: 0 auto; }
+
+    .nav {
+      height: 78px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: "Segoe UI", Arial, sans-serif;
+      font-size: 14px;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; font-weight: 750; }
+    .mark {
+      width: 34px; height: 34px;
+      border: 1px solid var(--ink);
+      display: grid; place-items: center;
+      background: var(--panel);
+      box-shadow: 4px 4px 0 var(--ink);
+    }
+    .mark-code {
+      font-family: "Consolas", monospace;
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+    .links { display: flex; align-items: center; gap: 26px; color: var(--muted); }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 0 18px;
+      border: 1px solid var(--ink);
+      border-radius: 999px;
+      background: var(--ink);
+      color: white;
+      font-family: "Segoe UI", Arial, sans-serif;
+      font-weight: 700;
+      transition: transform .18s ease, box-shadow .18s ease, background .18s ease;
+    }
+    .button:hover { transform: translateY(-2px); box-shadow: 0 12px 32px rgba(23,23,23,.18); }
+    .button.secondary { background: var(--panel); color: var(--ink); }
+
+    .hero {
+      min-height: calc(100vh - 78px);
+      display: grid;
+      grid-template-columns: 1.02fr .98fr;
+      align-items: center;
+      gap: 48px;
+      padding: 46px 0 72px;
+    }
+    .eyebrow {
+      display: inline-flex;
+      gap: 10px;
+      align-items: center;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.46);
+      border-radius: 999px;
+      color: var(--green-dark);
+      font-family: "Segoe UI", Arial, sans-serif;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .dot { width: 8px; height: 8px; background: var(--green); border-radius: 50%; }
+    h1 {
+      max-width: 740px;
+      margin: 24px 0 22px;
+      font-size: clamp(58px, 8vw, 118px);
+      line-height: .88;
+      letter-spacing: 0;
+      text-wrap: balance;
+    }
+    .lead {
+      max-width: 660px;
+      color: var(--muted);
+      font-family: "Segoe UI", Arial, sans-serif;
+      font-size: 20px;
+      line-height: 1.65;
+      text-wrap: pretty;
+    }
+    .hero-actions { display: flex; gap: 14px; margin-top: 34px; flex-wrap: wrap; }
+    .proof {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 46px;
+      font-family: "Segoe UI", Arial, sans-serif;
+    }
+    .proof div {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.5);
+      padding: 16px;
+      min-height: 92px;
+    }
+    .proof strong { display: block; color: var(--ink); margin-bottom: 7px; }
+    .proof span { color: var(--muted); font-size: 13px; line-height: 1.45; }
+
+    .product-stage {
+      position: relative;
+      min-height: 620px;
+      display: grid;
+      place-items: center;
+    }
+    .product-stage:before {
+      content: "";
+      position: absolute;
+      width: 390px; height: 390px;
+      border: 1px solid rgba(15,124,104,.24);
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(15,124,104,.17), transparent 62%);
+    }
+    .product {
+      position: relative;
+      width: min(520px, 100%);
+      filter: drop-shadow(0 28px 44px rgba(34,30,22,.18));
+      transform: rotate(-2deg);
+      transition: transform .35s ease;
+    }
+    .product:hover { transform: rotate(0deg) translateY(-4px); }
+
+    section { padding: 104px 0; border-top: 1px solid rgba(23,23,23,.09); }
+    .section-head {
+      display: grid;
+      grid-template-columns: .78fr 1fr;
+      gap: 52px;
+      align-items: end;
+      margin-bottom: 40px;
+    }
+    h2 {
+      margin: 0;
+      font-size: clamp(42px, 5.4vw, 82px);
+      line-height: .92;
+      letter-spacing: 0;
+      text-wrap: balance;
+    }
+    .section-head p {
+      margin: 0;
+      color: var(--muted);
+      font-family: "Segoe UI", Arial, sans-serif;
+      font-size: 18px;
+      line-height: 1.7;
+    }
+
+    .principles {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+    }
+    .principle {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      padding: 26px;
+      min-height: 300px;
+      box-shadow: var(--shadow);
+      transition: transform .18s ease, border-color .18s ease;
+    }
+    .principle:hover { transform: translateY(-5px); border-color: var(--green); }
+    .number {
+      font-family: "Segoe UI", Arial, sans-serif;
+      color: var(--green);
+      font-weight: 850;
+      margin-bottom: 48px;
+    }
+    .principle h3 { margin: 0 0 16px; font-size: 28px; line-height: 1.05; }
+    .principle p {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      color: var(--muted);
+      line-height: 1.65;
+    }
+
+    .workflow {
+      display: grid;
+      grid-template-columns: .9fr 1.1fr;
+      gap: 30px;
+      align-items: stretch;
+    }
+    .steps {
+      background: #161512;
+      color: #f8f3e8;
+      padding: 30px;
+      border: 1px solid #161512;
+    }
+    .step {
+      display: grid;
+      grid-template-columns: 46px 1fr;
+      gap: 16px;
+      padding: 20px 0;
+      border-bottom: 1px solid rgba(255,255,255,.12);
+      font-family: "Segoe UI", Arial, sans-serif;
+    }
+    .step:last-child { border-bottom: 0; }
+    .step b {
+      width: 42px; height: 42px;
+      display: grid; place-items: center;
+      border: 1px solid rgba(255,255,255,.28);
+      color: #83e3d3;
+      font-family: Consolas, monospace;
+    }
+    .step h3 { margin: 0 0 7px; font-size: 18px; }
+    .step p { margin: 0; color: rgba(248,243,232,.67); line-height: 1.55; }
+    .terminal {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      padding: 22px;
+      font-family: Consolas, "SFMono-Regular", monospace;
+      color: #28302d;
+      min-height: 420px;
+    }
+    .terminal-top { display: flex; gap: 8px; margin-bottom: 24px; }
+    .terminal-top i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+    .line { display: flex; justify-content: space-between; gap: 18px; padding: 13px 0; border-bottom: 1px solid rgba(23,23,23,.08); }
+    .line span:last-child { color: var(--green); }
+
+    .features {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      font-family: "Segoe UI", Arial, sans-serif;
+    }
+    .feature {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.45);
+      padding: 20px;
+      min-height: 190px;
+    }
+    .feature h3 { margin: 0 0 34px; font-size: 17px; }
+    .feature p { margin: 0; color: var(--muted); line-height: 1.55; font-size: 14px; }
+
+    .cta {
+      background: #161512;
+      color: #fffaf0;
+      padding: 72px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 24px;
+    }
+    .cta h2 { font-size: clamp(40px, 5vw, 74px); }
+    .cta p {
+      margin: 18px 0 0;
+      color: rgba(255,250,240,.68);
+      font-family: "Segoe UI", Arial, sans-serif;
+      font-size: 18px;
+      line-height: 1.6;
+    }
+    .cta .button { background: #fffaf0; color: #161512; border-color: #fffaf0; }
+
+    footer {
+      padding: 42px 0 56px;
+      display: flex;
+      justify-content: space-between;
+      color: var(--muted);
+      font-family: "Segoe UI", Arial, sans-serif;
+      font-size: 14px;
+    }
+
+    @media (max-width: 920px) {
+      .nav .links { display: none; }
+      .hero, .section-head, .workflow, .cta { grid-template-columns: 1fr; }
+      .hero { padding-top: 26px; }
+      .product-stage { min-height: auto; padding: 30px 0 10px; }
+      .principles, .features, .proof { grid-template-columns: 1fr; }
+      .cta { padding: 38px 26px; }
+      footer { flex-direction: column; gap: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="wrap nav" aria-label="Primary">
+    <a class="brand" href="#">
+      <span class="mark" aria-hidden="true">
+        <span class="mark-code">CV</span>
+      </span>
+      <span>Codex Vault</span>
+    </a>
+    <div class="links">
+      <a href="#why">Why</a>
+      <a href="#workflow">Workflow</a>
+      <a href="#features">Features</a>
+      <a class="button secondary" href="https://github.com/DurianLoop/CodexVault">GitHub</a>
+    </div>
+  </nav>
+
+  <main>
+    <header class="wrap hero">
+      <div>
+        <span class="eyebrow"><span class="dot"></span> v0.2 local beta</span>
+        <h1>Your Codex memory, carried safely.</h1>
+        <p class="lead">Codex Vault is a local-first desktop companion for the skills, memory notes, prompts, and migration packs that make your Codex setup feel like yours.</p>
+        <div class="hero-actions">
+          <a class="button" href="https://github.com/DurianLoop/CodexVault">Download the beta</a>
+          <a class="button secondary" href="#workflow">See how it works</a>
+        </div>
+        <div class="proof" aria-label="Product promises">
+          <div><strong>Private by default</strong><span>Your `.codex` assets stay local unless you decide otherwise.</span></div>
+          <div><strong>Migration-ready</strong><span>Preview, backup, export, import, and roll back with confidence.</span></div>
+          <div><strong>Playful progress</strong><span>A Steam-like achievement wall makes upkeep feel less like chores.</span></div>
+        </div>
+      </div>
+      <div class="product-stage">
+        <img class="product" src="../docs/assets/dashboard.png" alt="Codex Vault desktop dashboard preview">
+      </div>
+    </header>
+
+    <section id="why">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>A safe place for your working memory.</h2>
+          <p>Codex gets better as your local context grows. Codex Vault gives those assets a home: visible, backed up, portable, and still under your control.</p>
+        </div>
+        <div class="principles">
+          <article class="principle">
+            <div class="number">01</div>
+            <h3>Own the folder.</h3>
+            <p>Scan your local `.codex` directory without a cloud account. See skills, memory files, prompts, rules, backups, and excluded sensitive files.</p>
+          </article>
+          <article class="principle">
+            <div class="number">02</div>
+            <h3>Move without guessing.</h3>
+            <p>Every import can be previewed before it writes. Added, replaced, and skipped files are called out before a backup point is created.</p>
+          </article>
+          <article class="principle">
+            <div class="number">03</div>
+            <h3>Make upkeep visible.</h3>
+            <p>Achievements turn healthy workspace habits into tiny milestones, with progress bars, unlock history, and desktop notifications.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="workflow">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>From scattered files to a portable vault.</h2>
+          <p>The beta focuses on the parts that matter for migration: identify what is safe, exclude what is risky, create a pack, and recover quickly if you change your mind.</p>
+        </div>
+        <div class="workflow">
+          <div class="steps">
+            <div class="step"><b>01</b><div><h3>Scan</h3><p>Read your local `.codex` structure and classify assets by type.</p></div></div>
+            <div class="step"><b>02</b><div><h3>Protect</h3><p>Keep auth files, tokens, sessions, caches, and runtime data out of exports.</p></div></div>
+            <div class="step"><b>03</b><div><h3>Preview</h3><p>Inspect what an import will add or replace before it touches the filesystem.</p></div></div>
+            <div class="step"><b>04</b><div><h3>Recover</h3><p>Restore from a local backup point when a migration needs to be undone.</p></div></div>
+          </div>
+          <div class="terminal" aria-label="Migration terminal preview">
+            <div class="terminal-top"><i></i><i></i><i></i></div>
+            <div class="line"><span>skills detected</span><span>8 / 7 valid</span></div>
+            <div class="line"><span>memory files</span><span>11</span></div>
+            <div class="line"><span>sensitive excluded</span><span>auth, tokens, sessions</span></div>
+          <div class="line"><span>import preview</span><span>add 14 / replace 3 / skip 0</span></div>
+            <div class="line"><span>latest backup</span><span>ready</span></div>
+            <div class="line"><span>achievement</span><span>Binary Cartographer unlocked</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="features">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Built for the beta that comes before the cloud.</h2>
+          <p>Codex Vault v0.2 keeps the footprint small: Windows, Python standard library, local data, and clear boundaries. Real hosted sync can arrive later without rushing the trust model.</p>
+        </div>
+        <div class="features">
+          <article class="feature"><h3>Skill health</h3><p>Count skills, validate `SKILL.md`, and preview the instruction file that Codex will actually read.</p></article>
+          <article class="feature"><h3>Read-only memory</h3><p>Inspect important memory markdown without editing it by accident during beta testing.</p></article>
+          <article class="feature"><h3>Share-code lab</h3><p>Generate local codes for migration experiments before public object storage exists.</p></article>
+          <article class="feature"><h3>Achievement wall</h3><p>Click cards to reveal requirements, progress, rarity, and recent unlock history.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="wrap cta">
+        <div>
+          <h2>Start with your own vault.</h2>
+          <p>Clone the beta, run the desktop app, and see what your `.codex` folder has quietly become.</p>
+        </div>
+        <a class="button" href="https://github.com/DurianLoop/CodexVault">Open on GitHub</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="wrap">
+    <span>Codex Vault - local-first beta</span>
+    <span>No cloud upload in the current build</span>
+  </footer>
+</body>
+</html>

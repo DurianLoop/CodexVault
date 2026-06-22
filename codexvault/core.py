@@ -311,6 +311,66 @@ def create_backup(codex_root: str | Path, backups_dir: str | Path, *, reason: st
     return backup_path
 
 
+def _is_safe_manifest_item(item: dict, names: set[str]) -> tuple[bool, Path | None, str | None]:
+    try:
+        relative = Path(item["relative_path"])
+    except (KeyError, TypeError):
+        return False, None, "missing relative_path"
+    if item.get("sensitive") or item.get("volatile"):
+        return False, relative, "sensitive or volatile"
+    if relative.is_absolute() or ".." in relative.parts:
+        return False, relative, "unsafe path"
+    source_name = normalize_relative(relative)
+    if source_name not in names:
+        return False, relative, "missing from pack"
+    return True, relative, None
+
+
+def preview_import_pack(pack_path: str | Path, target_root: str | Path) -> dict:
+    pack_file = Path(pack_path).expanduser().resolve()
+    target = Path(target_root).expanduser().resolve()
+    if not pack_file.exists():
+        raise FileNotFoundError(f"Pack not found: {pack_file}")
+
+    added: list[str] = []
+    replaced: list[str] = []
+    skipped: list[dict[str, str]] = []
+    total_size = 0
+    manifest: dict = {}
+    with zipfile.ZipFile(pack_file) as pack:
+        names = set(pack.namelist())
+        if MANIFEST_NAME not in names:
+            raise ValueError("Pack is missing manifest.json")
+        manifest = json.loads(pack.read(MANIFEST_NAME).decode("utf-8"))
+        for item in manifest.get("items", []):
+            safe, relative, reason = _is_safe_manifest_item(item, names)
+            if not safe:
+                skipped.append({"path": normalize_relative(relative) if relative else "(unknown)", "reason": reason or "skipped"})
+                continue
+            assert relative is not None
+            total_size += int(item.get("size", 0))
+            rel_text = normalize_relative(relative)
+            if (target / relative).exists():
+                replaced.append(rel_text)
+            else:
+                added.append(rel_text)
+
+    return {
+        "pack": str(pack_file),
+        "target": str(target),
+        "manifest": {
+            "name": manifest.get("name", "Codex Vault Pack"),
+            "author": manifest.get("author", "unknown"),
+            "createdAt": manifest.get("createdAt", ""),
+            "schemaVersion": manifest.get("schemaVersion", ""),
+        },
+        "added": added,
+        "replaced": replaced,
+        "skipped": skipped,
+        "totalSize": total_size,
+    }
+
+
 def import_pack(pack_path: str | Path, target_root: str | Path) -> dict:
     pack_file = Path(pack_path).expanduser().resolve()
     target = Path(target_root).expanduser().resolve()
@@ -326,23 +386,42 @@ def import_pack(pack_path: str | Path, target_root: str | Path) -> dict:
             raise ValueError("Pack is missing manifest.json")
         manifest = json.loads(pack.read(MANIFEST_NAME).decode("utf-8"))
         for item in manifest.get("items", []):
-            relative = Path(item["relative_path"])
-            if item.get("sensitive") or item.get("volatile"):
-                skipped += 1
-                continue
-            if relative.is_absolute() or ".." in relative.parts:
+            safe, relative, _reason = _is_safe_manifest_item(item, names)
+            if not safe or relative is None:
                 skipped += 1
                 continue
             source_name = normalize_relative(relative)
-            if source_name not in names:
-                skipped += 1
-                continue
             target_file = target / relative
             target_file.parent.mkdir(parents=True, exist_ok=True)
             with pack.open(source_name) as source, target_file.open("wb") as dest:
                 shutil.copyfileobj(source, dest)
             imported += 1
     return {"imported": imported, "skipped": skipped, "target": str(target)}
+
+
+def restore_backup(backup_path: str | Path, target_root: str | Path) -> dict:
+    backup = Path(backup_path).expanduser().resolve()
+    target = Path(target_root).expanduser().resolve()
+    manifest_path = backup / MANIFEST_NAME
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Backup manifest not found: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    restored = 0
+    skipped = 0
+    for item in manifest.get("items", []):
+        relative = Path(item["relative_path"])
+        if item.get("sensitive") or item.get("volatile") or relative.is_absolute() or ".." in relative.parts:
+            skipped += 1
+            continue
+        source = backup / relative
+        if not source.exists():
+            skipped += 1
+            continue
+        target_file = target / relative
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target_file)
+        restored += 1
+    return {"restored": restored, "skipped": skipped, "target": str(target), "backup": str(backup)}
 
 
 def load_manifest_from_pack(pack_path: str | Path) -> dict:

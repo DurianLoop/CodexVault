@@ -12,6 +12,8 @@ from codexvault.core import (
     create_backup,
     export_pack,
     import_pack,
+    preview_import_pack,
+    restore_backup,
     scan_codex,
 )
 
@@ -105,6 +107,37 @@ class CodexVaultCoreTests(unittest.TestCase):
             self.assertTrue((target / "skills" / "pdf" / "SKILL.md").exists())
             self.assertFalse((target / "auth.json").exists())
             self.assertGreaterEqual(result["imported"], 4)
+
+    def test_import_preview_reports_add_replace_skip_before_writing(self):
+        with self.tempdir() as tmp:
+            root = Path(tmp)
+            codex = self.make_codex_tree(root)
+            pack_path = root / "vault.codexvault.zip"
+            export_pack(codex, pack_path, author="tester")
+
+            target = root / "target-codex"
+            (target / "memories").mkdir(parents=True)
+            (target / "memories" / "MEMORY.md").write_text("old content", encoding="utf-8")
+
+            preview = preview_import_pack(pack_path, target)
+
+            self.assertIn("memories/MEMORY.md", preview["replaced"])
+            self.assertIn("skills/pdf/SKILL.md", preview["added"])
+            self.assertEqual(preview["skipped"], [])
+            self.assertFalse((target / "skills" / "pdf" / "SKILL.md").exists())
+
+    def test_restore_backup_recovers_files_from_backup_point(self):
+        with self.tempdir() as tmp:
+            root = Path(tmp)
+            codex = self.make_codex_tree(root)
+            backup_path = create_backup(codex, root / "backups", reason="rollback-test")
+            (codex / "memories" / "MEMORY.md").write_text("broken", encoding="utf-8")
+
+            result = restore_backup(backup_path, codex)
+
+            self.assertGreaterEqual(result["restored"], 4)
+            self.assertEqual((codex / "memories" / "MEMORY.md").read_text(encoding="utf-8"), "Decision log")
+            self.assertFalse((codex / "auth.json").read_text(encoding="utf-8") == "Decision log")
 
     def test_achievement_engine_unlocks_scan_and_asset_milestones(self):
         engine = AchievementEngine(default_achievements())
