@@ -104,7 +104,7 @@ def load_state(path: str | Path) -> dict[str, Any]:
     state_path = Path(path)
     if not state_path.exists():
         return {"unlocked": [], "metrics": {}}
-    return json.loads(state_path.read_text(encoding="utf-8"))
+    return json.loads(state_path.read_text(encoding="utf-8-sig"))
 
 
 def save_state(path: str | Path, state: dict[str, Any]) -> None:
