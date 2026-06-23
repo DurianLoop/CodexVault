@@ -7,8 +7,9 @@ import shutil
 import zipfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from difflib import unified_diff
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Literal
 
 
 MANIFEST_NAME = "manifest.json"
@@ -69,6 +70,14 @@ TYPE_BY_TOP_LEVEL = {
     "project-presets": "project_preset",
     "presets": "project_preset",
 }
+
+KNOWN_IMPORT_FOLDERS = set(TYPE_BY_TOP_LEVEL) | {
+    "config.toml",
+    "agents.md",
+    "settings.json",
+}
+
+ImportAction = Literal["add", "replace", "skip", "rename"]
 
 COUNT_KEYS = (
     "memories",
@@ -335,6 +344,8 @@ def preview_import_pack(pack_path: str | Path, target_root: str | Path) -> dict:
     added: list[str] = []
     replaced: list[str] = []
     skipped: list[dict[str, str]] = []
+    files: list[dict[str, object]] = []
+    warnings: list[dict[str, str]] = []
     total_size = 0
     manifest: dict = {}
     with zipfile.ZipFile(pack_file) as pack:
@@ -345,15 +356,40 @@ def preview_import_pack(pack_path: str | Path, target_root: str | Path) -> dict:
         for item in manifest.get("items", []):
             safe, relative, reason = _is_safe_manifest_item(item, names)
             if not safe:
-                skipped.append({"path": normalize_relative(relative) if relative else "(unknown)", "reason": reason or "skipped"})
+                rel_text = normalize_relative(relative) if relative else "(unknown)"
+                skipped.append({"path": rel_text, "reason": reason or "skipped"})
+                files.append({"path": rel_text, "status": "skipped", "reason": reason or "skipped", "defaultAction": "skip"})
                 continue
             assert relative is not None
             total_size += int(item.get("size", 0))
             rel_text = normalize_relative(relative)
+            top = relative.parts[0] if relative.parts else rel_text
+            if top not in KNOWN_IMPORT_FOLDERS and rel_text not in KNOWN_IMPORT_FOLDERS:
+                warnings.append({"path": rel_text, "kind": "unknown-folder", "message": f"Unknown import folder: {top}"})
+            file_preview: dict[str, object] = {
+                "path": rel_text,
+                "size": int(item.get("size", 0)),
+                "type": item.get("type", "other"),
+                "warnings": [warning for warning in warnings if warning["path"] == rel_text],
+            }
             if (target / relative).exists():
                 replaced.append(rel_text)
+                file_preview["status"] = "replace"
+                file_preview["defaultAction"] = "replace"
+                if relative.suffix.lower() == ".md":
+                    try:
+                        old_text = (target / relative).read_text(encoding="utf-8", errors="ignore").splitlines()
+                        new_text = pack.read(rel_text).decode("utf-8", errors="ignore").splitlines()
+                        file_preview["markdownDiff"] = "\n".join(
+                            unified_diff(old_text, new_text, fromfile=f"current/{rel_text}", tofile=f"pack/{rel_text}", lineterm="")
+                        )
+                    except (OSError, UnicodeDecodeError, KeyError):
+                        file_preview["markdownDiff"] = ""
             else:
                 added.append(rel_text)
+                file_preview["status"] = "add"
+                file_preview["defaultAction"] = "add"
+            files.append(file_preview)
 
     return {
         "pack": str(pack_file),
@@ -367,11 +403,31 @@ def preview_import_pack(pack_path: str | Path, target_root: str | Path) -> dict:
         "added": added,
         "replaced": replaced,
         "skipped": skipped,
+        "warnings": warnings,
+        "files": files,
         "totalSize": total_size,
     }
 
 
-def import_pack(pack_path: str | Path, target_root: str | Path) -> dict:
+def _unique_rename_target(target: Path, relative: Path) -> Path:
+    stem = relative.stem
+    suffix = relative.suffix
+    parent = relative.parent
+    for index in range(1, 1000):
+        candidate = parent / f"{stem}.imported-{index}{suffix}"
+        if not (target / candidate).exists():
+            return candidate
+    raise FileExistsError(f"Could not find a rename target for {relative}")
+
+
+def import_pack(
+    pack_path: str | Path,
+    target_root: str | Path,
+    *,
+    actions: dict[str, str | dict[str, str]] | None = None,
+    history_path: str | Path | None = None,
+    backup_path: str | Path | None = None,
+) -> dict:
     pack_file = Path(pack_path).expanduser().resolve()
     target = Path(target_root).expanduser().resolve()
     if not pack_file.exists():
@@ -380,6 +436,10 @@ def import_pack(pack_path: str | Path, target_root: str | Path) -> dict:
 
     imported = 0
     skipped = 0
+    renamed = 0
+    replaced = 0
+    added = 0
+    affected: list[str] = []
     with zipfile.ZipFile(pack_file) as pack:
         names = set(pack.namelist())
         if MANIFEST_NAME not in names:
@@ -391,12 +451,91 @@ def import_pack(pack_path: str | Path, target_root: str | Path) -> dict:
                 skipped += 1
                 continue
             source_name = normalize_relative(relative)
-            target_file = target / relative
+            action_value = (actions or {}).get(source_name)
+            rename_to: str | None = None
+            if isinstance(action_value, dict):
+                action = action_value.get("action", "replace")
+                rename_to = action_value.get("target")
+            else:
+                action = action_value or ("replace" if (target / relative).exists() else "add")
+            if action == "skip":
+                skipped += 1
+                continue
+            if action == "add" and (target / relative).exists():
+                skipped += 1
+                continue
+            if action == "rename":
+                destination = Path(rename_to) if rename_to else _unique_rename_target(target, relative)
+                if destination.is_absolute() or ".." in destination.parts:
+                    skipped += 1
+                    continue
+                target_relative = destination
+                renamed += 1
+            elif action in {"add", "replace"}:
+                target_relative = relative
+            else:
+                skipped += 1
+                continue
+            existed = (target / target_relative).exists()
+            target_file = target / target_relative
             target_file.parent.mkdir(parents=True, exist_ok=True)
             with pack.open(source_name) as source, target_file.open("wb") as dest:
                 shutil.copyfileobj(source, dest)
             imported += 1
-    return {"imported": imported, "skipped": skipped, "target": str(target)}
+            affected.append(normalize_relative(target_relative))
+            if existed:
+                replaced += 1
+            elif action == "add":
+                added += 1
+    result = {
+        "imported": imported,
+        "skipped": skipped,
+        "renamed": renamed,
+        "replaced": replaced,
+        "added": added,
+        "target": str(target),
+        "affected": affected,
+    }
+    if history_path:
+        append_import_history(history_path, pack_file, target, result, backup_path=backup_path)
+    return result
+
+
+def append_import_history(
+    history_path: str | Path,
+    pack_path: str | Path,
+    target_root: str | Path,
+    result: dict,
+    *,
+    backup_path: str | Path | None = None,
+) -> None:
+    path = Path(history_path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        history = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(history, list):
+            history = []
+    except (OSError, json.JSONDecodeError):
+        history = []
+    history.append(
+        {
+            "importedAt": utc_now(),
+            "pack": str(Path(pack_path).expanduser()),
+            "target": str(Path(target_root).expanduser()),
+            "backup": str(Path(backup_path).expanduser()) if backup_path else "",
+            "result": result,
+        }
+    )
+    path.write_text(json.dumps(history[-50:], ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_import_history(history_path: str | Path) -> list[dict]:
+    path = Path(history_path).expanduser()
+    try:
+        history = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return history if isinstance(history, list) else []
 
 
 def restore_backup(backup_path: str | Path, target_root: str | Path) -> dict:

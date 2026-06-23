@@ -11,16 +11,11 @@ from tkinter import filedialog, ttk
 from .achievements import AchievementEngine, default_achievements, load_state, save_state
 from .core import create_backup, export_pack, human_size, import_pack, preview_import_pack, restore_backup, scan_codex
 from .phase2 import LocalAuthStore, ShareCodeStore
+from .paths import ACHIEVEMENT_ICON_DIR, BACKUP_DIR, DATA_DIR, EXPORT_DIR, IMPORT_HISTORY_FILE, STATE_FILE, ensure_runtime_dirs, startup_diagnostics
 from .workflow import edit_memory_file, list_memories, list_skills
 
 
 APP_NAME = "Codex Vault"
-ROOT_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT_DIR / "data"
-BACKUP_DIR = DATA_DIR / "backups"
-EXPORT_DIR = DATA_DIR / "exports"
-STATE_FILE = DATA_DIR / "achievement_state.json"
-ACHIEVEMENT_ICON_DIR = ROOT_DIR / "codexvault" / "assets" / "achievements"
 
 BG = "#080b12"
 PANEL = "#121827"
@@ -76,6 +71,7 @@ class CodexVaultApp(tk.Tk):
         self.metrics = dict(self.state_data.get("metrics", {}))
         self.notification_history = list(self.state_data.get("notifications", []))
         self.activated_achievement_ids = set(self.state_data.get("activated", []))
+        self.achievement_history_details = dict(self.state_data.get("achievementHistory", {}))
         self.engine = AchievementEngine(default_achievements(), set(self.state_data.get("unlocked", [])))
         self.views: dict[str, tk.Frame] = {}
         self.achievement_bounds: dict[int, tuple[int, int, int, int]] = {}
@@ -115,6 +111,7 @@ class CodexVaultApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.request_close)
         self.bind("<Escape>", lambda _event: self.hide_detail_overlay())
         self._build_shell()
+        self.report_startup_diagnostics()
         self.bind("<Map>", self._restore_chrome_after_minimize)
         self.show_view("overview")
         self._startup_scan_job = self.after(500, self.refresh_in_background)
@@ -127,6 +124,15 @@ class CodexVaultApp(tk.Tk):
                 continue
             icons.append(tk.PhotoImage(file=str(path)))
         return icons
+
+    def report_startup_diagnostics(self) -> None:
+        issues = startup_diagnostics()
+        if not issues:
+            self.append_status_log(f"Runtime data: {DATA_DIR}", "info")
+            return
+        self.set_status(issues[0], "error")
+        for issue in issues:
+            self.append_status_log(issue, "error")
 
     def request_close(self) -> None:
         self._close_requested = True
@@ -601,6 +607,23 @@ class CodexVaultApp(tk.Tk):
             )
             button.pack(side="left", padx=(0, 8))
             self.achievement_filter_buttons[label] = button
+        for label in ["Activated", "Not activated"]:
+            button = tk.Button(
+                filters,
+                text=label,
+                command=lambda value=label: self.set_achievement_filter(value),
+                bg="#0d1320",
+                fg=MUTED,
+                activebackground=PANEL_3,
+                activeforeground=TEXT,
+                relief="flat",
+                font=("Segoe UI Semibold", 9),
+                padx=12,
+                pady=5,
+                cursor="hand2",
+            )
+            button.pack(side="left", padx=(0, 8))
+            self.achievement_filter_buttons[label] = button
         self.achievement_history_label = tk.Label(hero, text="Recent unlocks: none yet", fg=GOLD, bg="#0d1320", font=("Consolas", 9), anchor="w", padx=10, pady=6)
         self.achievement_history_label.pack(fill="x", padx=16, pady=(0, 14))
         canvas_shell = tk.Frame(root, bg=BG)
@@ -927,14 +950,21 @@ class CodexVaultApp(tk.Tk):
 
     def perform_import_pack(self, pack_path: Path, backup_reason: str) -> None:
         def work() -> dict:
-            create_backup(self.codex_path, BACKUP_DIR, reason=backup_reason)
-            return import_pack(pack_path, self.codex_path)
+            backup = create_backup(self.codex_path, BACKUP_DIR, reason=backup_reason)
+            result = import_pack(pack_path, self.codex_path, history_path=IMPORT_HISTORY_FILE, backup_path=backup)
+            result["backup"] = str(backup)
+            return result
 
         def done(result: dict) -> None:
             self.bump_metric("imports")
             self.bump_metric("safe_imports")
             self.refresh_in_background()
-            self.notify(f"Imported {result['imported']} files, skipped {result['skipped']}.", "success", "Import complete")
+            self.notify(
+                f"Imported {result['imported']} files, skipped {result['skipped']}. Backup: {Path(result.get('backup', '')).name}",
+                "success",
+                "Import complete",
+            )
+            self.show_post_import_summary(result)
 
         self.run_background_task(
             "Creating backup and importing pack",
@@ -988,15 +1018,23 @@ class CodexVaultApp(tk.Tk):
             f"Add: {len(preview.get('added', []))} files",
             f"Replace: {len(preview.get('replaced', []))} files",
             f"Skip: {len(preview.get('skipped', []))} files",
+            f"Warnings: {len(preview.get('warnings', []))}",
             "",
             "Preview:",
         ]
-        for label, key in [("ADD", "added"), ("REPLACE", "replaced")]:
-            for path in preview.get(key, [])[:8]:
-                lines.append(f"+ {label:<7} {path}")
+        for item in preview.get("files", [])[:12]:
+            action = str(item.get("defaultAction", "skip")).upper()
+            status = str(item.get("status", "unknown")).upper()
+            lines.append(f"{action:<7} {status:<8} {item.get('path')}")
+            for warning in item.get("warnings", []):
+                lines.append(f"  ! {warning.get('message')}")
+            diff = item.get("markdownDiff")
+            if diff:
+                lines.append("  markdown diff:")
+                lines.extend(f"  {line}" for line in str(diff).splitlines()[:12])
         for item in preview.get("skipped", [])[:8]:
             lines.append(f"- SKIP    {item.get('path')} ({item.get('reason')})")
-        if len(preview.get("added", [])) + len(preview.get("replaced", [])) + len(preview.get("skipped", [])) > 24:
+        if len(preview.get("files", [])) + len(preview.get("skipped", [])) > 20:
             lines.append("... more files hidden in preview")
         return "\n".join(lines)
 
@@ -1015,6 +1053,28 @@ class CodexVaultApp(tk.Tk):
         self.ghost_button(buttons, "Cancel", modal.destroy).pack(side="right")
         self.action_button(buttons, "Create Backup + Import", lambda: (modal.destroy(), confirm_callback()), TEAL).pack(side="right", padx=(0, 10))
 
+    def show_post_import_summary(self, result: dict) -> None:
+        modal = self.create_modal("Import Summary", 560, 420)
+        shell = tk.Frame(modal.content, bg=PANEL, highlightthickness=1, highlightbackground="#334155")
+        shell.pack(fill="both", expand=True, padx=16, pady=16)
+        tk.Label(shell, text="Import complete", fg=TEXT, bg=PANEL, font=("Segoe UI Black", 20)).pack(anchor="w", padx=18, pady=(16, 4))
+        lines = [
+            f"Imported: {result.get('imported', 0)}",
+            f"Added: {result.get('added', 0)}",
+            f"Replaced: {result.get('replaced', 0)}",
+            f"Renamed: {result.get('renamed', 0)}",
+            f"Skipped: {result.get('skipped', 0)}",
+            f"Backup: {Path(result.get('backup', '')).name}",
+            "",
+            "Affected files:",
+        ]
+        lines.extend(f"- {path}" for path in result.get("affected", [])[:20])
+        body = tk.Text(shell, height=14, bg="#0a0f1c", fg=TEXT, insertbackground=TEXT, relief="flat", wrap="none", font=("Consolas", 10))
+        body.pack(fill="both", expand=True, padx=18, pady=(0, 14))
+        body.insert("end", "\n".join(lines))
+        body.configure(state="disabled")
+        self.action_button(shell, "Close", modal.destroy, TEAL).pack(anchor="e", padx=18, pady=(0, 16))
+
     def rollback_selected_backup(self) -> None:
         backup = self.selected_backup_path()
         if not backup:
@@ -1022,7 +1082,7 @@ class CodexVaultApp(tk.Tk):
             return
         self.confirm_action(
             "Restore backup?",
-            f"Restore files from backup {backup.name}. Current files with matching paths will be replaced.",
+            f"Restore files from backup {backup.name} into {self.codex_path}. Current files with matching paths will be replaced.",
             lambda: self.perform_rollback(backup),
             ORANGE,
         )
@@ -1092,6 +1152,7 @@ class CodexVaultApp(tk.Tk):
                 "progress": self.progress_snapshot(),
                 "notifications": self.notification_history[-20:],
                 "activated": sorted(self.activated_achievement_ids),
+                "achievementHistory": self.achievement_history_details,
             },
         )
 
@@ -1124,6 +1185,10 @@ class CodexVaultApp(tk.Tk):
             return [item for item in achievements if self.is_achievement_unlocked(item)]
         if selected == "未达成":
             return [item for item in achievements if not self.is_achievement_unlocked(item)]
+        if selected == "Activated":
+            return [item for item in achievements if item.id in self.activated_achievement_ids]
+        if selected == "Not activated":
+            return [item for item in achievements if item.id not in self.activated_achievement_ids]
         return [item for item in achievements if item.rarity == selected]
 
     def on_achievement_canvas_configure(self, event) -> None:
@@ -1313,6 +1378,9 @@ class CodexVaultApp(tk.Tk):
             self.notify(f"{achievement.name} is already active.", "info", "Achievement")
             return
         self.activated_achievement_ids.add(achievement.id)
+        record = self.achievement_history_details.setdefault(achievement.id, {})
+        record["activatedAt"] = datetime.now().isoformat(timespec="seconds")
+        record["sourceEvent"] = "manual.activation"
         self.persist_state()
         self.notify(f"Activated {achievement.name}.", "success", "Achievement")
         self.render_achievements()
@@ -1425,20 +1493,32 @@ class CodexVaultApp(tk.Tk):
         if not hasattr(self, "achievement_history_label"):
             return
         if not self.notification_history:
-            self.achievement_history_label.configure(text="Recent unlocks: none yet")
+            activated = [item_id for item_id, details in self.achievement_history_details.items() if details.get("activatedAt")]
+            if activated:
+                self.achievement_history_label.configure(text=f"Recent activity: activated {activated[-1]}")
+            else:
+                self.achievement_history_label.configure(text="Recent unlocks: none yet")
             return
-        recent = "  /  ".join(item["name"] for item in self.notification_history[-3:])
-        self.achievement_history_label.configure(text=f"Recent unlocks: {recent}")
+        recent = "  /  ".join(
+            f"{item['name']} @ {item.get('unlockedAt', '')}" for item in self.notification_history[-3:]
+        )
+        activated_count = len([details for details in self.achievement_history_details.values() if details.get("activatedAt")])
+        self.achievement_history_label.configure(text=f"Recent unlocks: {recent}  /  Activated: {activated_count}")
 
     def record_notification(self, achievement: dict) -> None:
+        unlocked_at = datetime.now().isoformat(timespec="seconds")
         self.notification_history.append(
             {
                 "id": achievement.get("id", ""),
                 "name": achievement.get("name", "Achievement"),
                 "rarity": achievement.get("rarity", ""),
-                "unlockedAt": datetime.now().isoformat(timespec="seconds"),
+                "unlockedAt": unlocked_at,
+                "sourceEvent": "achievement.evaluate",
             }
         )
+        record = self.achievement_history_details.setdefault(achievement.get("id", ""), {})
+        record.setdefault("unlockedAt", unlocked_at)
+        record.setdefault("sourceEvent", "achievement.evaluate")
         self.notification_history = self.notification_history[-20:]
         self.persist_state()
         self.update_achievement_history()
@@ -1487,8 +1567,7 @@ class CodexVaultApp(tk.Tk):
 
 
 def main() -> int:
-    for path in [DATA_DIR, BACKUP_DIR, EXPORT_DIR]:
-        path.mkdir(parents=True, exist_ok=True)
+    ensure_runtime_dirs()
     app = CodexVaultApp()
     app.mainloop()
     return 0

@@ -7,15 +7,21 @@ import secrets
 import sqlite3
 import threading
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .paths import BACKEND_DATA_DIR, ensure_runtime_dirs
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def parse_iso(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 class BackendDb:
@@ -42,9 +48,11 @@ class BackendDb:
                 """
                 CREATE TABLE IF NOT EXISTS users (
                     username TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
                     salt TEXT NOT NULL,
                     password_hash TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    disabled INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS sessions (
                     token TEXT PRIMARY KEY,
@@ -56,12 +64,16 @@ class BackendDb:
                     username TEXT NOT NULL,
                     name TEXT NOT NULL,
                     platform TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
                     last_seen_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS packs (
                     id TEXT PRIMARY KEY,
                     owner TEXT NOT NULL,
                     name TEXT NOT NULL,
+                    manifest_hash TEXT NOT NULL,
+                    pack_size INTEGER NOT NULL,
+                    storage_key TEXT NOT NULL,
                     path TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
@@ -70,7 +82,17 @@ class BackendDb:
                     pack_id TEXT NOT NULL,
                     owner TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    max_downloads INTEGER NOT NULL,
+                    download_count INTEGER NOT NULL DEFAULT 0,
                     visibility TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS download_audit (
+                    id TEXT PRIMARY KEY,
+                    pack_id TEXT NOT NULL,
+                    requester TEXT NOT NULL,
+                    share_code TEXT NOT NULL,
+                    downloaded_at TEXT NOT NULL
                 );
                 """
             )
@@ -81,18 +103,19 @@ class BackendDb:
             raise ValueError("username>=3 and password>=8 required")
         salt = secrets.token_hex(16)
         password_hash = self.hash_password(password, salt)
+        user_id = secrets.token_hex(8)
         with closing(self.connect()) as conn:
             conn.execute(
-                "INSERT INTO users(username, salt, password_hash, created_at) VALUES(?, ?, ?, ?)",
-                (username, salt, password_hash, now_iso()),
+                "INSERT INTO users(username, user_id, salt, password_hash, created_at, disabled) VALUES(?, ?, ?, ?, ?, 0)",
+                (username, user_id, salt, password_hash, now_iso()),
             )
             conn.commit()
-        return {"username": username}
+        return {"username": username, "userId": user_id}
 
     def login(self, username: str, password: str) -> dict[str, str]:
         with closing(self.connect()) as conn:
             row = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
-            if not row or self.hash_password(password, row["salt"]) != row["password_hash"]:
+            if not row or row["disabled"] or self.hash_password(password, row["salt"]) != row["password_hash"]:
                 raise ValueError("invalid credentials")
             token = secrets.token_urlsafe(24)
             conn.execute("INSERT INTO sessions(token, username, created_at) VALUES(?, ?, ?)", (token, username, now_iso()))
@@ -113,33 +136,60 @@ class BackendDb:
             "username": username,
             "name": name or "Windows Device",
             "platform": "windows",
+            "firstSeenAt": now_iso(),
             "lastSeenAt": now_iso(),
         }
         with closing(self.connect()) as conn:
             conn.execute(
-                "INSERT INTO devices(id, username, name, platform, last_seen_at) VALUES(?, ?, ?, ?, ?)",
-                (device["id"], username, device["name"], device["platform"], device["lastSeenAt"]),
+                "INSERT INTO devices(id, username, name, platform, first_seen_at, last_seen_at) VALUES(?, ?, ?, ?, ?, ?)",
+                (device["id"], username, device["name"], device["platform"], device["firstSeenAt"], device["lastSeenAt"]),
             )
             conn.commit()
         return device
 
-    def add_pack(self, token: str, name: str, content: bytes) -> dict[str, str]:
+    def add_pack(self, token: str, name: str, content: bytes, *, share_ttl_hours: int = 24, max_downloads: int = 5) -> dict[str, str]:
         username = self.username_for_token(token)
         pack_id = secrets.token_hex(10)
+        storage_key = f"{username}/{pack_id}.codexvault.zip"
         pack_path = self.pack_dir / f"{pack_id}.codexvault.zip"
         pack_path.write_bytes(content)
         code = self.new_code()
+        manifest_hash = hashlib.sha256(content).hexdigest()
+        created_at = now_iso()
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=int(share_ttl_hours))).replace(microsecond=0).isoformat()
         with closing(self.connect()) as conn:
             conn.execute(
-                "INSERT INTO packs(id, owner, name, path, created_at) VALUES(?, ?, ?, ?, ?)",
-                (pack_id, username, name or "Codex Vault Pack", str(pack_path), now_iso()),
+                "INSERT INTO packs(id, owner, name, manifest_hash, pack_size, storage_key, path, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                (pack_id, username, name or "Codex Vault Pack", manifest_hash, len(content), storage_key, str(pack_path), created_at),
             )
             conn.execute(
-                "INSERT INTO share_codes(code, pack_id, owner, created_at, visibility) VALUES(?, ?, ?, ?, ?)",
-                (code, pack_id, username, now_iso(), "public"),
+                "INSERT INTO share_codes(code, pack_id, owner, created_at, expires_at, max_downloads, download_count, visibility) VALUES(?, ?, ?, ?, ?, ?, 0, ?)",
+                (code, pack_id, username, created_at, expires_at, max(1, int(max_downloads)), "private"),
             )
             conn.commit()
-        return {"packId": pack_id, "shareCode": code}
+        return {"packId": pack_id, "shareCode": code, "expiresAt": expires_at, "manifestHash": manifest_hash, "packSize": len(content)}
+
+    def list_packs(self, token: str) -> dict[str, list[dict[str, Any]]]:
+        username = self.username_for_token(token)
+        with closing(self.connect()) as conn:
+            rows = conn.execute(
+                "SELECT id, name, owner, manifest_hash, pack_size, storage_key, created_at FROM packs WHERE owner=? ORDER BY created_at DESC",
+                (username,),
+            ).fetchall()
+        return {
+            "packs": [
+                {
+                    "packId": row["id"],
+                    "name": row["name"],
+                    "owner": row["owner"],
+                    "manifestHash": row["manifest_hash"],
+                    "packSize": row["pack_size"],
+                    "storageKey": row["storage_key"],
+                    "createdAt": row["created_at"],
+                }
+                for row in rows
+            ]
+        }
 
     def share_info(self, code: str) -> dict[str, str]:
         with closing(self.connect()) as conn:
@@ -151,17 +201,35 @@ class BackendDb:
             raise KeyError("share code not found")
         return {"code": row["code"], "owner": row["owner"], "createdAt": row["created_at"], "name": row["name"]}
 
-    def download_pack(self, token: str, code: str) -> dict[str, str]:
-        self.username_for_token(token)
+    def download_pack(self, token: str, identifier: str) -> dict[str, str]:
+        requester = self.username_for_token(token)
         with closing(self.connect()) as conn:
             row = conn.execute(
-                "SELECT p.name, p.path FROM share_codes s JOIN packs p ON p.id=s.pack_id WHERE s.code=?",
-                (code,),
+                "SELECT p.id, p.name, p.path, p.owner, s.code, s.expires_at, s.max_downloads, s.download_count "
+                "FROM share_codes s JOIN packs p ON p.id=s.pack_id WHERE s.code=?",
+                (identifier,),
             ).fetchone()
-        if not row:
-            raise KeyError("share code not found")
+            share_code = identifier
+            if row:
+                if parse_iso(row["expires_at"]) <= datetime.now(timezone.utc):
+                    raise PermissionError("share code expired")
+                if int(row["download_count"]) >= int(row["max_downloads"]):
+                    raise PermissionError("share code download limit reached")
+                conn.execute("UPDATE share_codes SET download_count=download_count+1 WHERE code=?", (identifier,))
+            else:
+                share_code = ""
+                row = conn.execute("SELECT id, name, path, owner FROM packs WHERE id=?", (identifier,)).fetchone()
+                if not row:
+                    raise KeyError("pack or share code not found")
+                if row["owner"] != requester:
+                    raise PermissionError("pack belongs to another user")
+            conn.execute(
+                "INSERT INTO download_audit(id, pack_id, requester, share_code, downloaded_at) VALUES(?, ?, ?, ?, ?)",
+                (secrets.token_hex(8), row["id"], requester, share_code, now_iso()),
+            )
+            conn.commit()
         content = Path(row["path"]).read_bytes()
-        return {"name": row["name"], "contentBase64": base64.b64encode(content).decode("ascii")}
+        return {"packId": row["id"], "name": row["name"], "contentBase64": base64.b64encode(content).decode("ascii")}
 
     def new_code(self) -> str:
         alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -213,8 +281,11 @@ class BackendServer:
                         self.send_json(db.share_info(code))
                         return
                     if parsed.path.startswith("/api/packs/") and parsed.path.endswith("/download"):
-                        code = parsed.path.split("/")[-2]
-                        self.send_json(db.download_pack(self.bearer_token(), code))
+                        identifier = parsed.path.split("/")[-2]
+                        self.send_json(db.download_pack(self.bearer_token(), identifier))
+                        return
+                    if parsed.path == "/api/packs":
+                        self.send_json(db.list_packs(self.bearer_token()))
                         return
                     if parsed.path == "/api/health":
                         self.send_json({"ok": True, "time": now_iso()})
@@ -237,7 +308,15 @@ class BackendServer:
                         return
                     if self.path == "/api/packs":
                         content = base64.b64decode(payload.get("contentBase64", ""))
-                        self.send_json(db.add_pack(self.bearer_token(), payload.get("name", ""), content))
+                        self.send_json(
+                            db.add_pack(
+                                self.bearer_token(),
+                                payload.get("name", ""),
+                                content,
+                                share_ttl_hours=int(payload.get("shareTtlHours", 24)),
+                                max_downloads=int(payload.get("maxDownloads", 5)),
+                            )
+                        )
                         return
                     self.send_error_json(404, "not found")
                 except Exception as exc:
@@ -292,8 +371,8 @@ class BackendServer:
 
 
 def main() -> int:
-    root = Path(__file__).resolve().parents[1] / "data" / "backend"
-    server = BackendServer(root, host="127.0.0.1", port=8765)
+    ensure_runtime_dirs()
+    server = BackendServer(BACKEND_DATA_DIR, host="127.0.0.1", port=8765)
     print(f"Codex Vault backend listening on http://127.0.0.1:8765")
     server.serve_forever()
     return 0

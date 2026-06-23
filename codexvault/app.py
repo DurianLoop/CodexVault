@@ -18,14 +18,11 @@ from .core import (
     load_manifest_from_pack,
     scan_codex,
 )
+from .paths import BACKUP_DIR, DATA_DIR, EXPORT_DIR, STATE_FILE, ensure_runtime_dirs, project_root
 
 
 APP_NAME = "Codex Vault"
-ROOT_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT_DIR / "data"
-BACKUP_DIR = DATA_DIR / "backups"
-EXPORT_DIR = DATA_DIR / "exports"
-STATE_FILE = DATA_DIR / "achievement_state.json"
+ROOT_DIR = project_root()
 
 BG = "#101114"
 PANEL = "#17191f"
@@ -493,9 +490,7 @@ class CodexVaultApp(tk.Tk):
 
 
 def main() -> int:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_runtime_dirs()
     app = CodexVaultApp()
     app.mainloop()
     return 0

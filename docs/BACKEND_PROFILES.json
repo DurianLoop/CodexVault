@@ -1,0 +1,20 @@
+{
+  "local": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "dataDir": "%LOCALAPPDATA%\\CodexVault\\backend",
+    "publicShareCodes": false
+  },
+  "staging": {
+    "host": "127.0.0.1",
+    "port": 8766,
+    "dataDir": "%LOCALAPPDATA%\\CodexVault\\backend-staging",
+    "publicShareCodes": false
+  },
+  "production": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "dataDir": "managed-by-deployment",
+    "publicShareCodes": false
+  }
+}

@@ -124,7 +124,66 @@ class CodexVaultCoreTests(unittest.TestCase):
             self.assertIn("memories/MEMORY.md", preview["replaced"])
             self.assertIn("skills/pdf/SKILL.md", preview["added"])
             self.assertEqual(preview["skipped"], [])
+            self.assertIn("markdownDiff", next(item for item in preview["files"] if item["path"] == "memories/MEMORY.md"))
             self.assertFalse((target / "skills" / "pdf" / "SKILL.md").exists())
+
+    def test_import_actions_support_skip_replace_rename_and_history(self):
+        with self.tempdir() as tmp:
+            root = Path(tmp)
+            codex = self.make_codex_tree(root)
+            pack_path = root / "vault.codexvault.zip"
+            export_pack(codex, pack_path, author="tester")
+            target = root / "target-codex"
+            (target / "memories").mkdir(parents=True)
+            (target / "memories" / "MEMORY.md").write_text("old content", encoding="utf-8")
+            history = root / "history.json"
+
+            result = import_pack(
+                pack_path,
+                target,
+                actions={
+                    "memories/MEMORY.md": "skip",
+                    "skills/pdf/SKILL.md": {"action": "rename", "target": "skills/pdf/SKILL.imported.md"},
+                },
+                history_path=history,
+                backup_path=root / "backups" / "backup-1",
+            )
+
+            self.assertEqual((target / "memories" / "MEMORY.md").read_text(encoding="utf-8"), "old content")
+            self.assertTrue((target / "skills" / "pdf" / "SKILL.imported.md").exists())
+            self.assertGreaterEqual(result["skipped"], 1)
+            self.assertEqual(result["renamed"], 1)
+            saved = json.loads(history.read_text(encoding="utf-8"))
+            self.assertEqual(saved[-1]["result"]["renamed"], 1)
+
+    def test_import_preview_warns_unknown_folders_and_blocks_path_traversal(self):
+        with self.tempdir() as tmp:
+            root = Path(tmp)
+            pack_path = root / "custom.codexvault.zip"
+            manifest = {
+                "name": "Custom",
+                "author": "tester",
+                "schemaVersion": "1.0.0",
+                "items": [
+                    {"relative_path": "mystery/file.md", "type": "other", "size": 5, "sha256": "x", "modified_at": ""},
+                    {"relative_path": "../escape.md", "type": "other", "size": 6, "sha256": "x", "modified_at": ""},
+                ],
+            }
+            with zipfile.ZipFile(pack_path, "w") as pack:
+                pack.writestr("manifest.json", json.dumps(manifest))
+                pack.writestr("mystery/file.md", "hello")
+                pack.writestr("../escape.md", "escape")
+
+            preview = preview_import_pack(pack_path, root / "target")
+
+            self.assertIn("mystery/file.md", preview["added"])
+            self.assertEqual(preview["warnings"][0]["kind"], "unknown-folder")
+            self.assertEqual(preview["skipped"][0]["reason"], "unsafe path")
+
+            result = import_pack(pack_path, root / "target")
+            self.assertTrue((root / "target" / "mystery" / "file.md").exists())
+            self.assertFalse((root / "escape.md").exists())
+            self.assertEqual(result["skipped"], 1)
 
     def test_restore_backup_recovers_files_from_backup_point(self):
         with self.tempdir() as tmp:

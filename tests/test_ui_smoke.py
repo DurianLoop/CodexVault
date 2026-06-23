@@ -144,6 +144,25 @@ class UiSmokeTests(unittest.TestCase):
         finally:
             app.destroy()
 
+    def test_achievement_activation_filters_and_history_details(self):
+        app = CodexVaultApp()
+        app.withdraw()
+        try:
+            app.engine.unlocked_ids = {"hello_world"}
+            app.activated_achievement_ids = {"hello_world"}
+            app.set_achievement_filter("Activated")
+            self.assertEqual([item.id for item in app.filtered_achievements()], ["hello_world"])
+            app.set_achievement_filter("Not activated")
+            self.assertNotIn("hello_world", [item.id for item in app.filtered_achievements()])
+            app.activated_achievement_ids.clear()
+            app.achievement_history_details.clear()
+            app.persist_state = lambda: None
+            app.activate_achievement(0)
+            self.assertIn("activatedAt", app.achievement_history_details["hello_world"])
+            self.assertEqual(app.achievement_history_details["hello_world"]["sourceEvent"], "manual.activation")
+        finally:
+            app.destroy()
+
     def test_close_window_command_destroys_root(self):
         app = CodexVaultApp()
         app.withdraw()

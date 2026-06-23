@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 import urllib.request
+import urllib.error
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -45,6 +46,10 @@ class BackendApiTests(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=10) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def assert_http_error(self, fn):
+        with self.assertRaises(urllib.error.HTTPError):
+            fn()
+
     def make_pack(self, root: Path) -> Path:
         codex = root / ".codex"
         (codex / "skills" / "demo").mkdir(parents=True)
@@ -73,11 +78,38 @@ class BackendApiTests(unittest.TestCase):
                 uploaded = self.post_json(base, "/api/packs", {"name": "Demo Pack", "contentBase64": encoded}, token)
                 code = uploaded["shareCode"]
                 self.assertEqual(len(code), 8)
+                self.assertIn("manifestHash", uploaded)
 
                 public = self.get_json(base, f"/api/share-codes/{code}")
                 self.assertEqual(public["name"], "Demo Pack")
                 downloaded = self.get_json(base, f"/api/packs/{code}/download", token)
                 self.assertEqual(base64.b64decode(downloaded["contentBase64"]), pack.read_bytes())
+                own = self.get_json(base, "/api/packs", token)
+                self.assertEqual(own["packs"][0]["packId"], uploaded["packId"])
+            finally:
+                server.stop()
+
+    def test_backend_enforces_pack_ownership_share_limits_and_expiry(self):
+        with self.tempdir() as root:
+            server = BackendServer(root / "server", host="127.0.0.1", port=0, memory_db=True)
+            server.start_in_thread()
+            try:
+                base = server.base_url
+                self.post_json(base, "/api/register", {"username": "alice", "password": "correct horse"})
+                alice = self.post_json(base, "/api/login", {"username": "alice", "password": "correct horse"})["token"]
+                self.post_json(base, "/api/register", {"username": "bravo", "password": "correct horse"})
+                bravo = self.post_json(base, "/api/login", {"username": "bravo", "password": "correct horse"})["token"]
+                pack = self.make_pack(root)
+                encoded = base64.b64encode(pack.read_bytes()).decode("ascii")
+                uploaded = self.post_json(base, "/api/packs", {"name": "Private", "contentBase64": encoded, "maxDownloads": 1}, alice)
+
+                self.assert_http_error(lambda: self.get_json(base, f"/api/packs/{uploaded['packId']}/download", bravo))
+                shared = self.get_json(base, f"/api/packs/{uploaded['shareCode']}/download", bravo)
+                self.assertEqual(base64.b64decode(shared["contentBase64"]), pack.read_bytes())
+                self.assert_http_error(lambda: self.get_json(base, f"/api/packs/{uploaded['shareCode']}/download", bravo))
+
+                expired = self.post_json(base, "/api/packs", {"name": "Expired", "contentBase64": encoded, "shareTtlHours": -1}, alice)
+                self.assert_http_error(lambda: self.get_json(base, f"/api/packs/{expired['shareCode']}/download", bravo))
             finally:
                 server.stop()
 

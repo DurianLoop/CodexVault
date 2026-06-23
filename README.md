@@ -42,10 +42,10 @@ Codex Vault v0.1 is intentionally conservative.
 - It is **not** a hosted cloud service yet.
 - It does **not** publish public share codes to the internet.
 - It does **not** edit memory markdown from the UI in this beta.
-- It does **not** ship as a full single-file PyInstaller build yet.
+- It is moving toward a PyInstaller portable beta build.
 - It does **not** replace Tauri/Electron app shells yet.
 
-The current `CodexVault.exe` is a small Windows launcher for the local batch script. It still expects Python to be available on the machine.
+Source checkouts can still run through the batch scripts, while the portable beta build produces standalone PyInstaller executables for tester machines.
 
 ## Quick Start
 
@@ -156,6 +156,16 @@ python -B -c "from codexvault.ui_app import CodexVaultApp, default_codex_path; p
 python -B -c "import ast, pathlib; files=list(pathlib.Path('codexvault').glob('*.py'))+list(pathlib.Path('tests').glob('*.py'))+list(pathlib.Path('tools').glob('*.py')); [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for p in files]; print('AST_OK', len(files))"
 ```
 
+## Windows Portable Build
+
+Build a private-beta portable zip with PyInstaller:
+
+```powershell
+python tools\build_portable_exe.py
+```
+
+See [docs/PACKAGING_WINDOWS.md](docs/PACKAGING_WINDOWS.md) for the full packaging workflow, runtime data location, and smoke test checklist.
+
 ## Repository Layout
 
 ```text
@@ -166,7 +176,7 @@ docs/                       Checklists, planning docs, roadmap docs
 site/                       Static promotional page
 run_codex_vault.bat         Desktop launcher
 run_backend.bat             Local backend launcher
-build_portable_exe.bat      Lightweight launcher build helper
+build_portable_exe.bat      PyInstaller portable build helper
 ```
 
 ## v0.1 Beta Scope
